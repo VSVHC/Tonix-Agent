@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─────────────────────────────────────────────────────────
+   Design tokens — light (default) + dark
+   Semantic names only; components never use raw hex.
+   ───────────────────────────────────────────────────────── */
+:root {
+  --bg:              #f6f7f9;
+  --bg-elevated:     #ffffff;
+  --surface:         #ffffff;
+  --surface-2:       #f1f3f6;
+  --border:          #e4e7ec;
+  --border-strong:   #d0d5dd;
+  --text:            #101828;
+  --text-2:          #475467;
+  --text-3:          #98a2b3;
+
+  --primary:         #2563eb;
+  --primary-hover:   #1d4ed8;
+  --primary-fg:      #ffffff;
+  --primary-soft:    #eff4ff;
+  --ring:            #93b4fb;
+
+  --shadow-card: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06);
+  --shadow-pop:  0 8px 24px rgba(16,24,40,0.10), 0 2px 6px rgba(16,24,40,0.06);
+
+  /* Severity — badge foreground / background / border (light) */
+  --sev-critical-fg: #b42318; --sev-critical-bg: #fef3f2; --sev-critical-bd: #fecdca;
+  --sev-high-fg:     #b93815; --sev-high-bg:     #fff4ed; --sev-high-bd:     #f9dbaf;
+  --sev-medium-fg:   #854a0e; --sev-medium-bg:   #fefbe8; --sev-medium-bd:   #feee95;
+  --sev-low-fg:      #067647; --sev-low-bg:      #ecfdf3; --sev-low-bd:      #abefc6;
+  --sev-info-fg:     #175cd3; --sev-info-bg:     #eff8ff; --sev-info-bd:     #b2ddff;
+}
+
+.dark {
+  --bg:              #0b0f16;
+  --bg-elevated:     #10151e;
+  --surface:         #131924;
+  --surface-2:       #1b2230;
+  --border:          #253040;
+  --border-strong:   #34435b;
+  --text:            #e6edf5;
+  --text-2:          #9aa8bd;
+  --text-3:          #64748b;
+
+  --primary:         #3b82f6;
+  --primary-hover:   #60a5fa;
+  --primary-fg:      #ffffff;
+  --primary-soft:    #16233b;
+  --ring:            #2f5fbf;
+
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.30);
+  --shadow-pop:  0 12px 32px rgba(0,0,0,0.45);
+
+  /* Severity — tuned for dark surfaces */
+  --sev-critical-fg: #fda29b; --sev-critical-bg: rgba(240,68,56,0.14);  --sev-critical-bd: rgba(240,68,56,0.34);
+  --sev-high-fg:     #fdb373; --sev-high-bg:     rgba(247,144,9,0.14);   --sev-high-bd:     rgba(247,144,9,0.34);
+  --sev-medium-fg:   #fde272; --sev-medium-bg:   rgba(234,179,8,0.14);   --sev-medium-bd:   rgba(234,179,8,0.32);
+  --sev-low-fg:      #75e0a7; --sev-low-bg:      rgba(18,183,106,0.14);  --sev-low-bd:      rgba(18,183,106,0.34);
+  --sev-info-fg:     #84caff; --sev-info-bg:     rgba(46,144,250,0.14);  --sev-info-bd:     rgba(46,144,250,0.34);
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Tabular figures everywhere numbers matter (counts, tables, charts). */
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; border: 3px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* Focus ring — visible, consistent, accessible */
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 6px; }
+
+@layer components {
+  /* ── Severity badge (label + color, never color alone) ── */
+  .sev-badge {
+    display: inline-flex; align-items: center; gap: 0.25rem;
+    font-size: 0.6875rem; font-weight: 600; line-height: 1;
+    padding: 0.25rem 0.5rem; border-radius: 999px;
+    border: 1px solid transparent; text-transform: capitalize;
+    white-space: nowrap;
+  }
+  .sev-critical { color: var(--sev-critical-fg); background: var(--sev-critical-bg); border-color: var(--sev-critical-bd); }
+  .sev-high     { color: var(--sev-high-fg);     background: var(--sev-high-bg);     border-color: var(--sev-high-bd); }
+  .sev-medium   { color: var(--sev-medium-fg);   background: var(--sev-medium-bg);   border-color: var(--sev-medium-bd); }
+  .sev-low      { color: var(--sev-low-fg);      background: var(--sev-low-bg);      border-color: var(--sev-low-bd); }
+  .sev-info     { color: var(--sev-info-fg);     background: var(--sev-info-bg);     border-color: var(--sev-info-bd); }
+
+  /* Severity foreground color (for counts / numbers / accents) */
+  .sev-fg-critical { color: var(--sev-critical-fg); }
+  .sev-fg-high     { color: var(--sev-high-fg); }
+  .sev-fg-medium   { color: var(--sev-medium-fg); }
+  .sev-fg-low      { color: var(--sev-low-fg); }
+  .sev-fg-info     { color: var(--sev-info-fg); }
+
+  /* Left accent bar used on finding rows */
+  .sev-bar-critical { background: #ef4444; }
+  .sev-bar-high     { background: #f97316; }
+  .sev-bar-medium   { background: #eab308; }
+  .sev-bar-low      { background: #22c55e; }
+  .sev-bar-info     { background: #3b82f6; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    box-shadow: var(--shadow-card);
+  }
+}

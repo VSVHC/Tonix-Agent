@@ -1,0 +1,31 @@
+# ── Secrets — never commit ──────────────────────────────
+.env
+
+# ── Real scan data (sensitive: third-party targets) ─────
+reports/
+logs/
+*.db
+*.db-shm
+*.db-wal
+backend/database/*.db*
+
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# ── Frontend ────────────────────────────────────────────
+node_modules/
+frontend/dist/
+
+# ── Claude Code local settings (per-developer, absolute paths) ──
+.claude/settings.local.json
+
+# ── OS / editor ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

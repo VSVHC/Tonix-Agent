@@ -41,7 +41,7 @@ pytest                # from project root
 
 ```
 pentest-agent/
-├── .env.example              ← Copy to .env and fill in values
+├── env.example               ← Copy to .env and fill in values
 ├── .env                      ← Your local config (git-ignored)
 ├── pytest.ini                ← Test runner config
 │

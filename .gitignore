@@ -2,7 +2,8 @@
 .env
 
 # ── Real scan data (sensitive: third-party targets) ─────
-reports/
+# Anchored to root: this is the REPORTS_DIR output dir, NOT backend/reports/ source.
+/reports/
 logs/
 *.db
 *.db-shm
@@ -29,3 +30,4 @@ frontend/dist/
 Thumbs.db
 .idea/
 .vscode/
+.gstack/

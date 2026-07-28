@@ -307,7 +307,7 @@ export default function LiveScan({ scanId: scanIdProp, onScanEnded }) {
       <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 shadow-card lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="truncate font-mono text-sm font-medium text-foreground">{scan?.target_url || `Scan ${id.slice(0, 8)}…`}</div>
-          <StatusPill status={status} isPaused={isPaused} count={findings.length} pending={pendingAction} />
+          <StatusPill status={status} isPaused={isPaused} count={vulnFindings.length} pending={pendingAction} />
         </div>
 
         {(isActive || status === 'completed') && (

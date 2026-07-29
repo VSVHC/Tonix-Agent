@@ -331,13 +331,20 @@ class KatanaCrawler:
         )
 
     async def _run(self, cmd: list[str]) -> subprocess.CompletedProcess:
-        """Run one katana invocation in a thread executor with a timeout."""
+        """Run one katana invocation in a thread executor.
+
+        KATANA_TIMEOUT <= 0 means no wall-clock limit: katana runs until it has
+        listed every URL within depth+scope (it terminates on its own).
+        """
         self._log.debug("Command: %s", " ".join(cmd))
         loop = asyncio.get_event_loop()
+        # ponytail: timeout<=0 disables the backstop; katana ends itself on a
+        # depth-limited crawl. Set a positive KATANA_TIMEOUT to re-cap it.
+        outer = None if settings.KATANA_TIMEOUT <= 0 else settings.KATANA_TIMEOUT + 5
         try:
             return await asyncio.wait_for(
                 loop.run_in_executor(None, self._run_katana_subprocess, cmd),
-                timeout=settings.KATANA_TIMEOUT + 5,
+                timeout=outer,
             )
         except asyncio.TimeoutError:
             raise KatanaCrawlError(
@@ -360,7 +367,7 @@ class KatanaCrawler:
         try:
             return subprocess.run(
                 cmd, capture_output=True, text=True,
-                timeout=settings.KATANA_TIMEOUT,
+                timeout=(settings.KATANA_TIMEOUT if settings.KATANA_TIMEOUT > 0 else None),
             )
         except FileNotFoundError:
             raise KatanaCrawlError(

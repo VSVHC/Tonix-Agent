@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     # ── Katana crawler ─────────────────────────────────────
     KATANA_PATH: str = "katana"          # path to katana binary (must be in PATH)
     KATANA_DEPTH: int = 5                # crawl depth (-d) — deep enough to exhaust routes
-    KATANA_TIMEOUT: int = 180            # max seconds before katana is killed
+    KATANA_TIMEOUT: int = 0              # wall-clock cap in secs; 0 = no limit, run until katana finishes
     KATANA_CONCURRENCY: int = 10         # katana internal concurrency (-c flag)
 
     # JS-aware crawling. Modern targets are SPAs (React/Vue/Angular): the

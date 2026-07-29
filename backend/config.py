@@ -103,7 +103,7 @@ class Settings(BaseSettings):
 
     @field_validator("BACKEND_PORT", "FRONTEND_PORT", "ERROR_MODULE_RATE_LIMIT",
                      "SCAN_RATE_LIMIT_PER_MINUTE", "REQUEST_TIMEOUT",
-                     "KATANA_DEPTH", "KATANA_TIMEOUT", "KATANA_CONCURRENCY",
+                     "KATANA_DEPTH", "KATANA_CONCURRENCY",
                      mode="before")
     @classmethod
     def must_be_positive(cls, v: object) -> object:
@@ -113,6 +113,18 @@ class Settings(BaseSettings):
             raise ValueError(f"Must be an integer, got: {v!r}")
         if val <= 0:
             raise ValueError(f"Must be a positive integer, got: {val}")
+        return val
+
+    @field_validator("KATANA_TIMEOUT", mode="before")
+    @classmethod
+    def must_be_non_negative(cls, v: object) -> object:
+        # 0 = no wall-clock cap (run until katana finishes); >0 caps the crawl.
+        try:
+            val = int(v)
+        except (TypeError, ValueError):
+            raise ValueError(f"Must be an integer, got: {v!r}")
+        if val < 0:
+            raise ValueError(f"Must be 0 or a positive integer, got: {val}")
         return val
 
     @field_validator("OLLAMA_BASE_URL", mode="before")

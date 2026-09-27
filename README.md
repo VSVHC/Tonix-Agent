@@ -2,7 +2,7 @@
 
 # 🛡️ Tonix Agent
 
-**AI-powered, unauthenticated black-box web application security scanner**
+**AI-powered black-box web application security scanner**
 
 FastAPI backend · React/Vite dashboard · Playwright crawler · Ollama-powered finding enrichment
 
@@ -19,7 +19,7 @@ FastAPI backend · React/Vite dashboard · Playwright crawler · Ollama-powered 
 
 ## Overview
 
-Tonix Agent runs a real-browser crawl of a target application (via **Playwright**), then fans out **19 automated security test modules** across every discovered page — CORS, clickjacking, header hygiene, HTTP method abuse, request/response splitting, exposed `.git`, JS secret scanning, username enumeration, and more. Findings are enriched with a locally-run LLM (**Ollama**), streamed live to a React dashboard over WebSocket, and exportable as HTML/PDF reports. A standalone JWT testing toolkit and Slack alerting round out the workflow.
+Tonix Agent runs a real-browser crawl of a target application (via **Playwright**), then fans out **21 automated security test modules** across every discovered page — CORS, clickjacking, header hygiene, HTTP method abuse, request/response splitting, exposed `.git`, JS secret scanning, username enumeration, and more. Findings are enriched with a locally-run LLM (**Ollama**), streamed live to a React dashboard over WebSocket, and exportable as HTML/PDF reports. A standalone JWT testing toolkit and Slack alerting round out the workflow.
 
 > ⚠️ **Authorized testing only.** Tonix Agent sends live requests to the target it's pointed at. Only run it against applications you own or are explicitly authorized to test.
 
@@ -30,7 +30,7 @@ Tonix Agent runs a real-browser crawl of a target application (via **Playwright*
 | Category | Details |
 |---|---|
 | 🕷️ **Discovery** | Real Chromium crawl (Playwright) — waits for network idle, scrolls to trigger lazy-loaded chunks, and records every request the app actually fires, including runtime-built API calls |
-| 🔍 **19 test modules** | See [Scan Modules](#scan-modules) below |
+| 🔍 **21 test modules** | See [Scan Modules](#scan-modules) below |
 | 🤖 **LLM enrichment** | Local Ollama model (default `llama3.1:8b`) adds context/remediation to findings, with concurrent bounded enrichment |
 | 🔑 **JWT toolkit** | Decode, weakness-check, and attach JWT findings straight into a scan report |
 | 📊 **Live dashboard** | Real-time scan progress, sortable/filterable findings, module timing, analytics (KPIs, charts, history) |
@@ -56,7 +56,7 @@ Tonix Agent runs a real-browser crawl of a target application (via **Playwright*
                 │  FastAPI Backend │  (:8000)
                 │  ── Orchestrator │
                 │  ── Scope guard  │
-                │  ── 19 modules   │
+                │  ── 21 modules   │
                 └───┬────────┬─────┘
                     │        │
         ┌───────────▼─┐   ┌──▼────────────┐
@@ -205,7 +205,7 @@ tonix-agent/
 │   ├── llm.py                  # Ollama integration
 │   ├── logger.py                # Structured logging
 │   ├── database/                # aiosqlite persistence layer
-│   ├── modules/                 # 19 scan modules + Playwright crawler
+│   ├── modules/                 # 21 scan modules + Playwright crawler
 │   ├── analysis/                # JWT decode / weakness toolkit
 │   ├── notifications/           # Slack alerts
 │   └── reports/                 # HTML/PDF report generation

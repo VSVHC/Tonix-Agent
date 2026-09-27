@@ -18,7 +18,6 @@ import html
 from pathlib import Path
 from datetime import datetime, timezone
 
-from backend.config import settings
 from backend.reports.catalog import cvss_band
 from backend.reports.pdf_generator import _build_results, _clean_host
 
@@ -47,11 +46,13 @@ def generate_html_report(
     status_map: dict[str, str] | None = None,
     save_path: str | None = None,
     filename: str | None = None,
+    ai_summary: str = "",
+    ai_correlations: list[str] | None = None,
 ) -> str:
     host   = _clean_host(target_url)
     stamp  = datetime.now(timezone.utc)
     fname  = filename or f"{host}_{stamp.strftime('%Y-%m-%d_%H-%M')}.html"
-    base   = Path(save_path).expanduser().resolve() if save_path else settings.REPORTS_DIR
+    base   = Path(save_path).expanduser().resolve()
     base.mkdir(parents=True, exist_ok=True)
     path   = base / fname
 
@@ -72,14 +73,31 @@ def generate_html_report(
     )
 
     sections = "".join(_section(r) for r in results)
+    ai_html = _ai_section(ai_summary, ai_correlations or [])
 
     doc = _SHELL.format(
         target=_e(target_url), date=stamp.strftime("%B %d, %Y"), time=stamp.strftime("%I:%M %p UTC"),
         scan_id=_e(scan_id), total=len(results), vuln=vuln, nvul=nvul, na=na,
-        toc_rows=toc_rows, sections=sections, year=stamp.year,
+        toc_rows=toc_rows, sections=sections, ai_section=ai_html, year=stamp.year,
     )
     path.write_text(doc, encoding="utf-8")
     return str(path)
+
+
+def _ai_section(summary: str, correlations: list[str]) -> str:
+    """AI-generated executive summary + correlated attack chains. Empty → nothing."""
+    if not summary and not correlations:
+        return ""
+    parts = ['<h3 class="sec">AI Analysis</h3>', '<div class="ai-block">']
+    if summary:
+        parts.append(f'<div class="ai-sub">Executive Summary</div><p>{_e(summary)}</p>')
+    if correlations:
+        chains = "".join(f"<li>{_e(c)}</li>" for c in correlations)
+        parts.append(f'<div class="ai-sub">Correlated Attack Chains</div><ul class="ai-chains">{chains}</ul>')
+    parts.append('<div class="ai-note">Generated locally by an LLM from the confirmed findings. '
+                 'Advisory only — severity and detection are set by the scanner.</div>')
+    parts.append('</div>')
+    return "".join(parts)
 
 
 def _section(r: dict) -> str:
@@ -197,6 +215,11 @@ _SHELL = """<!DOCTYPE html>
   table.toc td{{padding:8px 12px;border-top:1px solid var(--border)}}
   table.toc tr:nth-child(even) td{{background:var(--surface2)}}
   .totals{{display:flex;gap:24px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin:14px 0 40px;font-size:13px}}
+  .ai-block{{background:var(--primary-soft);border:1px solid var(--primary);border-radius:12px;padding:20px 22px;margin:0 0 40px}}
+  .ai-sub{{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--primary);margin:14px 0 6px}}
+  .ai-sub:first-child{{margin-top:0}} .ai-block p{{margin:0;font-size:13.5px;line-height:1.65}}
+  ul.ai-chains{{margin:6px 0 0;padding-left:20px}} ul.ai-chains li{{margin-bottom:7px;font-size:13px;line-height:1.55}}
+  .ai-note{{margin-top:16px;font-size:11px;color:var(--text3);font-style:italic}}
   .totals b{{font-variant-numeric:tabular-nums}}
   .status{{font-size:11px;font-weight:600}} .status-vulnerable{{color:var(--sc-fg)}} .status-not_vulnerable{{color:var(--sl-fg)}} .status-not_applicable{{color:var(--text3)}}
   .sev{{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;border:1px solid transparent}}
@@ -248,6 +271,8 @@ _SHELL = """<!DOCTYPE html>
     <span>Not Applicable <b>{na}</b></span>
     <span>Total <b>{total}</b></span>
   </div>
+
+  {ai_section}
 
   {sections}
 

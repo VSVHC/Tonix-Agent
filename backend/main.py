@@ -133,7 +133,6 @@ active_orchestrators: Dict[str, ScanOrchestrator] = {}
 async def lifespan(app: FastAPI):
     log.info("Starting Tonix Agent (model=%s)", settings.OLLAMA_MODEL)
     await init_db()
-    settings.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     yield
     log.info("Shutting down Tonix Agent")
     await close_db()
@@ -189,7 +188,6 @@ async def health_check():
         "database":     "connected" if db_ok else "error",
         "ollama":       "connected" if ollama_ok else "unavailable",
         "ollama_model": settings.OLLAMA_MODEL,
-        "reports_dir":  str(settings.REPORTS_DIR),
     }
 
 

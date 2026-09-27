@@ -14,8 +14,8 @@ export const SEV_COLOR = {
   info:     '#3b82f6',
 }
 
-// Modules that run against Katana-discovered URLs (mirrors backend).
-export const KATANA_MODULES = new Set([
+// Modules that run against Playwright-discovered URLs (mirrors backend).
+export const PLAYWRIGHT_MODULES = new Set([
   'clickjacking', 'trace', 'host_header',
   'http_bypass', 'error_exceptions', 'req_splitting', 'res_splitting', 'cors',
 ])

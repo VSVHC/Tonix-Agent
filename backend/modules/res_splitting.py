@@ -171,11 +171,18 @@ class ResSplittingModule(BaseModule):
                 v = response.headers.get(header)
                 values = [v] if v else []
             for v in values:
-                if expect in v.lower():
+                # A REAL split isolates the injected header as its own clean
+                # value (Location: https://example.com). Substring-matching
+                # here false-positives on open redirects and CRLF-stripping
+                # servers, where the tail survives inside ONE value with a
+                # prefix (Location: %0d%0aLocation:https://example.com, or a
+                # stripped Location: location:https://example.com) — reflection,
+                # not a split. Require the value to stand alone.
+                if v.strip().lower() == expect:
                     return True, (
-                        f"Injected '{header}' header is present in the response "
-                        f"with value containing '{payload['expect']}' — the CRLF "
-                        "split a new header into the response."
+                        f"Injected '{header}' header materialised as its own "
+                        f"response header with value '{payload['expect']}' — the "
+                        "CRLF split a new header into the response."
                     )
             return False, ""
 

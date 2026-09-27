@@ -18,48 +18,67 @@ import httpx
 from backend.modules.base_module import BaseModule
 from backend.models import Finding
 
-# ── Secret patterns ──────────────────────────────────────
+CI = re.IGNORECASE   # field-name patterns: match "password"/"apiKey" any case
+CS = 0               # fixed-prefix tokens: prefix case is significant
+
+
+def _field(key: str, value: str) -> str:
+    """
+    Regex for a KEY:"VALUE" credential where the match anchors on KEY being a
+    real property key — quoted ("key": ) or bareword (key: / key=) — NOT the
+    same word appearing as display text inside some other value string.
+
+    This is what stops localization labels like  nsg_password1:"Password :"
+    from matching: there "Password" sits *inside* a value, followed by a
+    display space+colon, so it is neither a quoted key nor a bareword key with
+    the delimiter immediately after it. The VALUE capture is left wide open, so
+    a genuine secret containing ':' ',' '{' etc. is still caught in full.
+    """
+    return rf"(?:['\"]{key}['\"]\s*[:=]|{key}[:=])\s*['\"]({value})['\"]"
+
+
+# ── Secret patterns:  (regex, label, severity, flags) ────
 SECRET_PATTERNS = [
-    (r"AIza[0-9A-Za-z\-_]{35}",                                    "Google API Key",              "high"),
-    (r"AAAA[A-Za-z0-9_-]{7}:[A-Za-z0-9_-]{140}",                  "Firebase Cloud Messaging Key","high"),
-    (r"['\"]?api[_\-]?key['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_\-]{16,})['\"]", "Generic API Key",    "high"),
-    (r"['\"]?api[_\-]?secret['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_\-]{16,})['\"]","API Secret",       "high"),
-    (r"['\"]?access[_\-]?token['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_\-\.]{20,})['\"]","Access Token",  "high"),
-    (r"['\"]?auth[_\-]?token['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_\-\.]{20,})['\"]", "Auth Token",    "high"),
-    (r"['\"]?secret[_\-]?key['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_\-\.!@#$%]{8,})['\"]","Secret Key", "high"),
-    (r"['\"]?client[_\-]?secret['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_\-\.]{10,})['\"]","OAuth Client Secret","high"),
+    (r"AIza[0-9A-Za-z\-_]{35}",                                    "Google API Key",              "high",     CS),
+    (r"AAAA[A-Za-z0-9_-]{7}:[A-Za-z0-9_-]{140}",                  "Firebase Cloud Messaging Key","high",     CS),
+    (_field(r"api[_\-]?key",    r"[A-Za-z0-9_\-]{16,}"),          "Generic API Key",             "high",     CI),
+    (_field(r"api[_\-]?secret", r"[A-Za-z0-9_\-]{16,}"),          "API Secret",                  "high",     CI),
+    (_field(r"access[_\-]?token", r"[A-Za-z0-9_\-\.]{20,}"),      "Access Token",                "high",     CI),
+    (_field(r"auth[_\-]?token", r"[A-Za-z0-9_\-\.]{20,}"),        "Auth Token",                  "high",     CI),
+    (_field(r"secret[_\-]?key", r"[A-Za-z0-9_\-\.!@#$%]{8,}"),    "Secret Key",                  "high",     CI),
+    (_field(r"client[_\-]?secret", r"[A-Za-z0-9_\-\.]{10,}"),     "OAuth Client Secret",         "high",     CI),
     # AWS
-    (r"AKIA[0-9A-Z]{16}",                                          "AWS Access Key ID",           "critical"),
-    (r"['\"]?aws[_\-]?secret[_\-]?access[_\-]?key['\"]?\s*[:=]\s*['\"]([A-Za-z0-9/+]{40})['\"]","AWS Secret Access Key","critical"),
-    (r"s3\.amazonaws\.com/[A-Za-z0-9_\-\.]+",                     "Amazon S3 Bucket URL",        "medium"),
-    (r"[A-Za-z0-9_\-]+\.s3\.amazonaws\.com",                      "Amazon S3 Bucket Domain",     "medium"),
+    (r"AKIA[0-9A-Z]{16}",                                          "AWS Access Key ID",           "critical", CS),
+    (_field(r"aws[_\-]?secret[_\-]?access[_\-]?key", r"[A-Za-z0-9/+]{40}"),"AWS Secret Access Key","critical",CI),
+    (r"s3\.amazonaws\.com/[A-Za-z0-9_\-\.]+",                     "Amazon S3 Bucket URL",        "medium",   CI),
+    (r"[A-Za-z0-9_\-]+\.s3\.amazonaws\.com",                      "Amazon S3 Bucket Domain",     "medium",   CI),
     # Firebase
-    (r"https://[a-z0-9\-]+\.firebaseio\.com",                      "Firebase Database URL",       "high"),
-    (r"https://[a-z0-9\-]+\.firebasestorage\.app",                 "Firebase Storage URL",        "high"),
-    (r"['\"]?firebase[_\-]?api[_\-]?key['\"]?\s*[:=]\s*['\"]([A-Za-z0-9_\-]{35,})['\"]","Firebase API Key","critical"),
+    (r"https://[a-z0-9\-]+\.firebaseio\.com",                      "Firebase Database URL",       "high",     CI),
+    (r"https://[a-z0-9\-]+\.firebasestorage\.app",                 "Firebase Storage URL",        "high",     CI),
+    (_field(r"firebase[_\-]?api[_\-]?key", r"[A-Za-z0-9_\-]{35,}"),"Firebase API Key",           "critical", CI),
     # Passwords
-    (r"['\"]?password['\"]?\s*[:=]\s*['\"]([^'\"]{4,})['\"]",     "Hardcoded Password",          "critical"),
-    (r"['\"]?passwd['\"]?\s*[:=]\s*['\"]([^'\"]{4,})['\"]",       "Hardcoded Password (passwd)", "critical"),
-    (r"['\"]?db[_\-]?pass(word)?['\"]?\s*[:=]\s*['\"]([^'\"]{4,})['\"]","Database Password",     "critical"),
+    (_field(r"password", r"[^'\"]{4,}"),                          "Hardcoded Password",          "critical", CI),
+    (_field(r"passwd",   r"[^'\"]{4,}"),                          "Hardcoded Password (passwd)", "critical", CI),
+    (_field(r"db[_\-]?pass(?:word)?", r"[^'\"]{4,}"),             "Database Password",           "critical", CI),
     # Usernames
-    (r"['\"]?username['\"]?\s*[:=]\s*['\"]([^'\"]{3,})['\"]",     "Hardcoded Username",          "medium"),
-    (r"['\"]?db[_\-]?user['\"]?\s*[:=]\s*['\"]([^'\"]{3,})['\"]", "Database Username",           "medium"),
+    (_field(r"username", r"[^'\"]{3,}"),                          "Hardcoded Username",          "medium",   CI),
+    (_field(r"db[_\-]?user", r"[^'\"]{3,}"),                      "Database Username",           "medium",   CI),
     # JWT
-    (r"eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+","JWT Token",                   "critical"),
+    (r"eyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+","JWT Token",                   "critical", CS),
     # Private IPs
-    (r"(?<!\d)(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?!\d)","Private IP Address","medium"),
+    (r"(?<!\d)(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})(?!\d)","Private IP Address","medium", CS),
     # Keys
-    (r"['\"]?private[_\-]?key['\"]?\s*[:=]\s*['\"]([^'\"]{10,})['\"]","Private Key",             "critical"),
-    (r"-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----",               "PEM Private Key",             "critical"),
+    (_field(r"private[_\-]?key", r"[^'\"]{10,}"),                 "Private Key",                 "critical", CI),
+    (r"-----BEGIN (RSA |EC |DSA )?PRIVATE KEY-----",               "PEM Private Key",             "critical", CS),
     # Third-party tokens
-    (r"sk_live_[0-9a-zA-Z]{24,}",                                  "Stripe Live Secret Key",      "critical"),
-    (r"pk_live_[0-9a-zA-Z]{24,}",                                  "Stripe Live Publishable Key", "high"),
-    (r"AC[a-z0-9]{32}",                                            "Twilio Account SID",           "medium"),
-    (r"SK[0-9a-fA-F]{32}",                                         "Twilio Auth Token",            "high"),
-    (r"SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}",              "SendGrid API Key",             "critical"),
-    (r"xox[baprs]-[0-9]{12}-[0-9]{12}-[a-zA-Z0-9]{24}",          "Slack Token",                  "critical"),
-    (r"ghp_[A-Za-z0-9]{36}",                                       "GitHub Personal Access Token", "critical"),
-    (r"gho_[A-Za-z0-9]{36}",                                       "GitHub OAuth Token",           "critical"),
+    (r"sk_live_[0-9a-zA-Z]{24,}",                                  "Stripe Live Secret Key",      "critical", CS),
+    (r"pk_live_[0-9a-zA-Z]{24,}",                                  "Stripe Live Publishable Key", "high",     CS),
+    (r"AC[0-9a-f]{32}",                                            "Twilio Account SID",           "medium",  CS),
+    (r"SK[0-9a-fA-F]{32}",                                         "Twilio Auth Token",            "high",    CS),
+    (r"SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}",              "SendGrid API Key",             "critical", CS),
+    (r"xox[baprs]-[0-9]{12}-[0-9]{12}-[a-zA-Z0-9]{24}",          "Slack Token",                  "critical", CS),
+    (r"ghp_[A-Za-z0-9]{36}",                                       "GitHub Personal Access Token", "critical",CS),
+    (r"gho_[A-Za-z0-9]{36}",                                       "GitHub OAuth Token",           "critical",CS),
 ]
 
 # ── Internal API endpoint pattern (reported separately) ──
@@ -69,8 +88,8 @@ API_ENDPOINT_PATTERN = re.compile(
 )
 
 COMPILED_SECRET_PATTERNS = [
-    (re.compile(pattern, re.IGNORECASE), label, severity)
-    for pattern, label, severity in SECRET_PATTERNS
+    (re.compile(pattern, flags), label, severity)
+    for pattern, label, severity, flags in SECRET_PATTERNS
 ]
 
 FALSE_POSITIVE_VALUES = {

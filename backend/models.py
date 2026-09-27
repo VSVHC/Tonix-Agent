@@ -36,9 +36,10 @@ class ScanStatus(str, Enum):
 
 class WSEventType(str, Enum):
     SCAN_STARTED        = "scan_started"
-    CRAWL_STARTED       = "crawl_started"       # NEW — Katana crawl begins
-    CRAWL_COMPLETED     = "crawl_completed"     # NEW — Katana crawl finished
-    CRAWL_FAILED        = "crawl_failed"        # NEW — Katana crawl error
+    CRAWL_STARTED       = "crawl_started"       # browser crawl begins
+    CRAWL_PROGRESS      = "crawl_progress"      # per-page crawl progress
+    CRAWL_COMPLETED     = "crawl_completed"     # browser crawl finished
+    CRAWL_FAILED        = "crawl_failed"        # browser crawl error
     MODULE_STARTED      = "module_started"
     MODULE_PROGRESS     = "module_progress"     # NEW — per-module sub-progress
     MODULE_COMPLETED    = "module_completed"
@@ -54,8 +55,8 @@ class WSEventType(str, Enum):
 
 
 # ─────────────────────────────────────────────────────────
-#  CrawlResult — produced by KatanaCrawler, stored on
-#  ScopeEnforcer, consumed by the 7 Katana modules
+#  CrawlResult — produced by PlaywrightCrawler, stored on
+#  ScopeEnforcer, consumed by the crawl-aware modules
 # ─────────────────────────────────────────────────────────
 
 @dataclass
@@ -212,7 +213,20 @@ class WSEvent(BaseModel):
         return cls(
             event=WSEventType.CRAWL_STARTED,
             scan_id=scan_id,
-            data={"target_url": target_url, "message": "Katana web crawl started..."},
+            data={"target_url": target_url, "message": "Browser crawl started..."},
+        )
+
+    @classmethod
+    def crawl_progress(cls, scan_id: str, pages_visited: int,
+                       pages_total: int, urls_found: int) -> "WSEvent":
+        return cls(
+            event=WSEventType.CRAWL_PROGRESS,
+            scan_id=scan_id,
+            data={
+                "pages_visited": pages_visited,
+                "pages_total":   pages_total,
+                "urls_found":    urls_found,
+            },
         )
 
     @classmethod

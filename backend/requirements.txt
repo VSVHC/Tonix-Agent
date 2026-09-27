@@ -24,6 +24,10 @@ reportlab>=4.2.0
 # ── Scope enforcement ──────────────────────────
 tldextract>=5.1.0
 
+# ── Browser crawler (playwright_crawler.py) ────
+# After install run: playwright install chromium
+playwright>=1.40.0
+
 # ── Testing ────────────────────────────────────
 pytest>=8.2.0
 pytest-asyncio>=0.23.0

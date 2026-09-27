@@ -8,12 +8,13 @@ Classes:
   ScanFinaliser   — deduplicates findings, generates report, sends Slack
   ScanOrchestrator — public interface: wires Runner + Finaliser together
 
-Katana integration:
-  Before the module loop starts, KatanaCrawler runs against the target
+Crawler integration:
+  Before the module loop starts, PlaywrightCrawler runs against the target
   and populates scope.crawl_result with all discovered URLs.
-  The 7 Katana-aware modules read from scope.crawl_result instead of
+  The 8 crawl-aware modules read from scope.crawl_result instead of
   testing only the root URL.
-  If Katana fails, the scan is stopped immediately with a clear error.
+  If the browser crawl fails (Playwright/Chromium missing), the scan is
+  stopped immediately with a clear error — there is no Katana fallback.
 """
 
 import asyncio
@@ -28,14 +29,14 @@ from backend.models import Finding, Severity, WSEvent, WSEventType, CrawlResult
 from backend.database.db import (
     create_scan, complete_scan, fail_scan, stop_scan,
     pause_scan_db, resume_scan_db,
-    save_finding, deduplicate_findings,
+    save_finding, deduplicate_findings, save_scan_analysis,
     delete_findings_by_scan_and_module,
 )
-from backend.llm import enrich_findings_concurrent
+from backend.llm import enrich_findings_concurrent, summarize_scan
 from backend.notifications.slack import notify_critical_finding, notify_scan_complete
 from backend.reports.catalog import BY_NAME
 from backend.modules.base_module import BaseModule
-from backend.modules.katana_crawler import KatanaCrawler, KatanaCrawlError
+from backend.modules.playwright_crawler import PlaywrightCrawler, PlaywrightCrawlError
 from backend.logger import get_logger
 
 # ── Import all scan modules ──────────────────────────────
@@ -87,9 +88,9 @@ ALL_MODULES: list[Type[BaseModule]] = [
     CorsModule,
 ]
 
-# ── Katana-aware modules — these iterate crawl_result URLs ──
-# The other 11 modules remain unchanged and test root URL only.
-KATANA_MODULES: set[str] = {
+# ── Crawl-aware modules — these iterate crawl_result URLs ──
+# The other 12 modules remain unchanged and test root URL only.
+PLAYWRIGHT_MODULES: set[str] = {
     "clickjacking",
     "trace",
     "host_header",
@@ -365,7 +366,7 @@ class ScanRunner(_EmitsEvents):
                 "index":             index,
                 "total":             TOTAL_MODULES,
                 "percent_complete":  pct,
-                "katana_enabled":    module_name in KATANA_MODULES,
+                "playwright_enabled": module_name in PLAYWRIGHT_MODULES,
             },
         ))
         self._log.info("[%s] Starting (%d/%d)", module_name, index, TOTAL_MODULES)
@@ -553,6 +554,18 @@ class ScanFinaliser(_EmitsEvents):
             counts["medium"], counts["low"], counts["info"],
         )
 
+        # ── LLM: one pass over all real findings → exec summary + attack chains ──
+        real = [f for f in findings if not _is_benign(f)]
+        analysis = await summarize_scan(real, self.target_url)
+        await save_scan_analysis(
+            self.scan_id, analysis["summary"], analysis["correlations"]
+        )
+        if analysis["summary"] or analysis["correlations"]:
+            self._log.info(
+                "LLM analysis — summary=%d chars, %d chain(s)",
+                len(analysis["summary"]), len(analysis["correlations"]),
+            )
+
         # No files written here: PDF/HTML reports are generated on demand at
         # download time from the stored findings (see /api/report endpoint).
         await complete_scan(self.scan_id, counts)
@@ -566,8 +579,10 @@ class ScanFinaliser(_EmitsEvents):
         await self._emit(WSEvent.scan_completed(
             self.scan_id,
             {
-                "counts":        counts,
-                "total_modules": TOTAL_MODULES,
+                "counts":          counts,
+                "total_modules":   TOTAL_MODULES,
+                "ai_summary":      analysis["summary"],
+                "ai_correlations": analysis["correlations"],
             },
         ))
         self._log.info("Scan complete ✓")
@@ -634,7 +649,7 @@ class ScanOrchestrator(_EmitsEvents):
 
         try:
             # ── Step 1: Katana crawl (blocking, before modules) ──
-            crawl_result = await self._run_katana_crawl()
+            crawl_result = await self._run_crawl()
             if crawl_result is None:
                 # Crawl failed — error already emitted, scan stopped
                 return
@@ -670,30 +685,42 @@ class ScanOrchestrator(_EmitsEvents):
             await self._client.aclose()
             self._log.debug("HTTP client closed")
 
-    async def _run_katana_crawl(self) -> CrawlResult | None:
+    async def _emit_crawl_progress(
+        self, pages_visited: int, pages_total: int, urls_found: int
+    ) -> None:
+        """Broadcast live crawl progress (one event per page visited)."""
+        await self._emit(WSEvent.crawl_progress(
+            self.scan_id, pages_visited, pages_total, urls_found,
+        ))
+
+    async def _run_crawl(self) -> CrawlResult | None:
         """
-        Run Katana crawl and return CrawlResult.
+        Run the Playwright browser crawl and return CrawlResult.
         Emits CRAWL_STARTED and CRAWL_COMPLETED WS events for the frontend.
         If crawl fails: emits CRAWL_FAILED, stops scan via fail_scan, returns None.
+        Tonix crawls with a real browser only — there is no Katana fallback.
         """
         await self._emit(WSEvent.crawl_started(self.scan_id, self.target_url))
-        self._log.info("Katana crawl starting...")
+        self._log.info("Browser (Playwright) crawl starting...")
 
         try:
-            crawler      = KatanaCrawler(self._scope, client=self._client)
+            crawler      = PlaywrightCrawler(
+                self._scope, client=self._client,
+                progress_cb=self._emit_crawl_progress,
+            )
             crawl_result = await crawler.crawl()
 
             await self._emit(WSEvent.crawl_completed(self.scan_id, crawl_result))
             self._log.info(
-                "Katana crawl complete — %d URLs discovered in %.1fs",
+                "Crawl complete — %d URLs discovered in %.1fs",
                 crawl_result.url_count,
                 crawl_result.crawl_duration,
             )
             return crawl_result
 
-        except KatanaCrawlError as exc:
+        except PlaywrightCrawlError as exc:
             reason = str(exc)
-            self._log.error("Katana crawl failed: %s", reason)
+            self._log.error("Browser crawl failed: %s", reason)
             await self._emit(WSEvent.crawl_failed(self.scan_id, reason))
-            await fail_scan(self.scan_id, f"Katana crawl failed: {reason}")
+            await fail_scan(self.scan_id, f"Browser crawl failed: {reason}")
             return None

@@ -1,22 +1,17 @@
 """
-modules/katana_crawler.py
+modules/crawl_pipeline.py
 ──────────────────────────
-Katana web crawler integration.
+URL discovery pipeline shared by the crawler.
 
-Implements the full discovery pipeline:
+Given a flat list of raw URLs (from PlaywrightCrawler's browser capture), this
+turns them into a verified CrawlResult:
 
-    Target URL → Katana → Extract → Normalize → Scope filter →
-    Deduplicate → Verify (httpx) → Return only verified URLs
+    raw URLs → Normalize → Scope filter → Deduplicate → Classify →
+    Supplement (mine HTML/JS) → Verify (httpx) → Return only verified URLs
 
-Katana runs JS-aware (─jc + headless) because the real targets are SPAs
-and API gateways whose routes/endpoints live inside JavaScript, not in the
-initial HTML. Everything Katana emits is then normalized, scope-filtered,
-de-duplicated and — critically — VERIFIED with httpx before it is returned.
-A URL is never trusted just because Katana discovered it.
-
-Windows compatibility:
-  Uses subprocess.run() inside a thread executor instead of
-  asyncio.create_subprocess_exec() — works on ALL Windows event loop types.
+A URL is never trusted just because it was discovered — everything is
+normalized, scope-filtered, de-duplicated and VERIFIED with httpx (including
+soft-404 / catch-all detection) before it is returned.
 
 Output is stored in ScopeEnforcer.crawl_result as a CrawlResult object:
   all_urls   → verified in-scope HTML pages (+ api-subdomain pages)
@@ -24,21 +19,14 @@ Output is stored in ScopeEnforcer.crawl_result as a CrawlResult object:
   js_files   → verified .js resources
   forms      → verified pages likely to contain forms
 
-If Katana is not installed or the crawl fails, KatanaCrawlError is raised
-and the scan is stopped immediately.
+PlaywrightCrawler subclasses CrawlPipeline to reuse all of this; it only
+supplies the raw URLs (the browser-capture stage).
 """
 
 import asyncio
 import hashlib
-import json
 import re
-import shutil
-import subprocess
-import sys
-import tempfile
-import time
 import uuid
-from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -127,166 +115,24 @@ _STATIC_EXTENSIONS = {
 }
 
 
-class KatanaCrawlError(Exception):
-    """Raised when Katana is not found or the crawl fails."""
-    pass
-
-
-class KatanaCrawler:
+class CrawlPipeline:
     """
-    Runs Katana against the target, then normalizes / scopes / dedupes /
-    verifies every discovered URL and returns a CrawlResult containing only
-    verified, in-scope URLs.
+    Turns a raw list of discovered URLs into a verified CrawlResult:
+    normalize → scope filter → dedupe → classify → supplement → httpx verify.
 
-    Usage (called from orchestrator before the module loop):
-        crawler = KatanaCrawler(scope, client=httpx_client)
-        crawl_result = await crawler.crawl()
-        scope.crawl_result = crawl_result
+    Subclassed by PlaywrightCrawler, which supplies the raw URLs from a real
+    browser crawl and reuses these helpers.
     """
 
     def __init__(self, scope: ScopeEnforcer, client: httpx.AsyncClient | None = None) -> None:
         self.scope        = scope
         self._client      = client
-        self._log         = get_logger("katana_crawler")
+        self._log         = get_logger("crawl_pipeline")
         self._ua_override = None   # set by _select_user_agent when default UA is blocked
 
     # ─────────────────────────────────────────────────────
-    #  Public entry point
+    #  User-Agent selection (bot-protection bypass)
     # ─────────────────────────────────────────────────────
-
-    async def crawl(self) -> CrawlResult:
-        """Run the full discovery pipeline and return a CrawlResult."""
-        self._check_katana_installed()
-
-        # If the target's bot protection blocks our User-Agent, switch to one
-        # that gets through — applied to httpx AND Katana — before anything else
-        # runs, otherwise every fetch returns an Access-Denied page.
-        await self._select_user_agent()
-
-        tmp_dir     = Path(tempfile.gettempdir())
-        output_file = tmp_dir / f"katana_{self.scope.target_host.replace(':', '_')}.jsonl"
-        output_file.unlink(missing_ok=True)
-
-        self._log.info("Starting Katana crawl → %s", self.scope.target_url)
-        started_at = time.monotonic()
-
-        # ── Stage 1: Katana (JS-aware, headless with graceful fallback) ──
-        result = await self._run(self._build_command(output_file, headless=True))
-        if result.returncode != 0 and self._is_headless_failure(result) \
-                and settings.KATANA_HEADLESS:
-            self._log.warning(
-                "Headless Chrome unavailable — retrying without -headless "
-                "(JS parsing still on). Install Chrome for full SPA coverage."
-            )
-            output_file.unlink(missing_ok=True)
-            result = await self._run(self._build_command(output_file, headless=False))
-
-        crawl_duration = time.monotonic() - started_at
-        if result.returncode != 0:
-            err_msg = (result.stderr or "").strip()
-            raise KatanaCrawlError(
-                f"Katana exited with code {result.returncode}.\n"
-                f"stderr: {err_msg or '(empty)'}"
-            )
-        self._log.info("Katana finished in %.1fs", crawl_duration)
-
-        # ── Stage 2: Extract raw URLs ──
-        raw_urls = self._parse_output(output_file)
-        self._log.info("Extracted %d raw URL(s) from Katana", len(raw_urls))
-
-        # URLs that came from Katana's OWN crawl (real navigation / JS
-        # route-table parsing / headless rendering) — highest confidence.
-        # Anything added later by our own supplemental regex mining is NOT
-        # in this set, and gets extra scrutiny in _verify_urls() on
-        # catch-all/soft-404 targets (see that method's docstring).
-        native_urls = {n for n in (self._normalize(u) for u in raw_urls) if n}
-
-        # ── Stage 3-5: Normalize → scope filter → dedupe → classify ──
-        result_cr = self._classify(raw_urls, crawl_duration)
-        self._log.info(
-            "After normalize/scope/dedupe — pages=%d js=%d api=%d",
-            result_cr.url_count, result_cr.js_count, result_cr.api_count,
-        )
-
-        # ── Stage 5b: Supplemental discovery (Katana-independent) ──
-        # Directly mine HTML pages and JS bundles for <script src>, <link
-        # href>, <a href> and .js / API references. This catches the Vite
-        # entry bundle, modulepreload chunks and route links that Katana's
-        # crawl can miss on Laravel/Vite/SPA targets.
-        #
-        # `trusted_urls` = Katana-native routes ∪ routes the site declares about
-        # itself (links in its HTML + route paths written into its own JS). On
-        # catch-all / soft-404 targets these are kept even though they return the
-        # same app shell as every path, because httpx cannot otherwise confirm a
-        # client-side route — a route the site's own code declares is real. This
-        # surfaces /about, /careers, /contact on a client-rendered SPA.
-        trusted_urls = set(native_urls)
-        if self._client:
-            extra, declared = await self._supplement(result_cr)
-            trusted_urls |= {n for n in (self._normalize(u) for u in declared) if n}
-            if extra:
-                self._log.info("Supplemental discovery added %d raw ref(s)", len(extra))
-                result_cr = self._classify(raw_urls + extra, crawl_duration)
-                self._log.info(
-                    "After supplement — pages=%d js=%d api=%d",
-                    result_cr.url_count, result_cr.js_count, result_cr.api_count,
-                )
-
-        # ── Stage 6: Verify every candidate with httpx ──
-        if self._client:
-            await self._verify_and_reconcile(result_cr, trusted_urls)
-
-        self._log.info(
-            "Verified crawl result — pages=%d js=%d api=%d forms=%d",
-            result_cr.url_count, result_cr.js_count,
-            result_cr.api_count, result_cr.form_count,
-        )
-
-        output_file.unlink(missing_ok=True)
-        return result_cr
-
-    # ─────────────────────────────────────────────────────
-    #  Stage 1 — Katana subprocess
-    # ─────────────────────────────────────────────────────
-
-    def _build_command(self, output_file: Path, headless: bool) -> list[str]:
-        """
-        Build the Katana CLI command for JS-aware recursive crawling.
-
-        -d <depth>  crawl deep enough to exhaust internal routes
-        -jc         parse .js bundles for endpoints/routes/nested JS
-        -headless   render client-side routes in real Chrome (auto-fallback)
-        -kf all     also fetch robots.txt + sitemap.xml
-        -fs <scope> rdn when any same-domain subdomain is allowed (so Katana can
-                    discover asset./api./static.<domain>), otherwise fqdn (exact
-                    host). Off-host noise is removed later by our scope filter.
-        """
-        allow_subdomains = (
-            settings.SCOPE_ALLOW_SUBDOMAINS or settings.SCOPE_ALLOW_API_SUBDOMAIN
-        )
-        field_scope = "rdn" if allow_subdomains else "fqdn"
-
-        cmd = [
-            settings.KATANA_PATH,
-            "-u",  self.scope.target_url,
-            "-d",  str(settings.KATANA_DEPTH),
-            "-c",  str(settings.KATANA_CONCURRENCY),
-            "-o",  str(output_file),
-            "-fs", field_scope,
-            "-jsonl", "-silent", "-no-color",
-        ]
-        if settings.KATANA_KNOWN_FILES:
-            cmd += ["-kf", settings.KATANA_KNOWN_FILES]
-        if settings.KATANA_JS_CRAWL:
-            cmd += ["-jc"]
-        if headless and settings.KATANA_HEADLESS:
-            cmd += ["-headless", "-no-sandbox"]
-        if settings.KATANA_RATE_LIMIT and settings.KATANA_RATE_LIMIT > 0:
-            cmd += ["-rl", str(settings.KATANA_RATE_LIMIT)]
-        # Use the same non-blocked User-Agent httpx settled on (if any).
-        if self._ua_override:
-            cmd += ["-H", f"User-Agent: {self._ua_override}"]
-        return cmd
 
     async def _select_user_agent(self) -> None:
         """
@@ -294,8 +140,8 @@ class KatanaCrawler:
         target's bot protection (403/429/503), retry with the fallbacks and
         adopt the first that gets through — mutating the shared httpx client so
         every later request (supplement + verification) uses it, and recording
-        it so `_build_command` passes it to Katana via -H. No-op when the
-        default UA already works or when there is no client to probe with.
+        it so the browser context uses the same UA. No-op when the default UA
+        already works or when there is no client to probe with.
         """
         if not self._client:
             return
@@ -321,115 +167,17 @@ class KatanaCrawler:
                 self._ua_override = ua
                 self._log.warning(
                     "Target blocked the default User-Agent (HTTP %s); switched to "
-                    "%r (HTTP %s) for httpx and Katana.", code, ua, alt,
+                    "%r (HTTP %s) for httpx and the browser.", code, ua, alt,
                 )
                 return
 
         self._log.warning(
             "Target blocks every probe User-Agent (HTTP %s) — bot protection may "
-            "limit discovery. Consider running Katana with headless Chrome.", code,
+            "limit discovery.", code,
         )
 
-    async def _run(self, cmd: list[str]) -> subprocess.CompletedProcess:
-        """Run one katana invocation in a thread executor.
-
-        KATANA_TIMEOUT <= 0 means no wall-clock limit: katana runs until it has
-        listed every URL within depth+scope (it terminates on its own).
-        """
-        self._log.debug("Command: %s", " ".join(cmd))
-        loop = asyncio.get_event_loop()
-        # ponytail: timeout<=0 disables the backstop; katana ends itself on a
-        # depth-limited crawl. Set a positive KATANA_TIMEOUT to re-cap it.
-        outer = None if settings.KATANA_TIMEOUT <= 0 else settings.KATANA_TIMEOUT + 5
-        try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(None, self._run_katana_subprocess, cmd),
-                timeout=outer,
-            )
-        except asyncio.TimeoutError:
-            raise KatanaCrawlError(
-                f"Katana crawl timed out after {settings.KATANA_TIMEOUT}s "
-                f"on target {self.scope.target_url}"
-            )
-
-    @staticmethod
-    def _is_headless_failure(result: subprocess.CompletedProcess) -> bool:
-        """True when a non-zero exit was caused by missing/broken Chrome."""
-        blob = ((result.stderr or "") + (result.stdout or "")).lower()
-        hints = (
-            "chrome", "chromium", "headless", "browser", "could not find",
-            "executable", "no such file", "devtools", "failed to launch",
-        )
-        return any(h in blob for h in hints)
-
-    def _run_katana_subprocess(self, cmd: list[str]) -> subprocess.CompletedProcess:
-        """Blocking subprocess call — runs in a thread executor."""
-        try:
-            return subprocess.run(
-                cmd, capture_output=True, text=True,
-                timeout=(settings.KATANA_TIMEOUT if settings.KATANA_TIMEOUT > 0 else None),
-            )
-        except FileNotFoundError:
-            raise KatanaCrawlError(
-                "Katana binary not found. "
-                "Install: go install github.com/projectdiscovery/katana/cmd/katana@latest"
-            )
-        except subprocess.TimeoutExpired:
-            raise KatanaCrawlError(
-                f"Katana timed out after {settings.KATANA_TIMEOUT}s "
-                f"on target {self.scope.target_url}"
-            )
-
-    def _check_katana_installed(self) -> None:
-        """Raise KatanaCrawlError early if katana binary is missing."""
-        binary = shutil.which(settings.KATANA_PATH)
-        if not binary:
-            if sys.platform == "win32":
-                import os
-                go_bin = Path(os.environ.get("USERPROFILE", "")) / "go" / "bin" / "katana.exe"
-                if go_bin.exists():
-                    settings.KATANA_PATH = str(go_bin)
-                    self._log.info("Katana found at: %s", go_bin)
-                    return
-            raise KatanaCrawlError(
-                f"Katana not found at '{settings.KATANA_PATH}'.\n"
-                "Install: go install github.com/projectdiscovery/katana/cmd/katana@latest\n"
-                "Then add %USERPROFILE%\\go\\bin (or $HOME/go/bin) to PATH."
-            )
-
     # ─────────────────────────────────────────────────────
-    #  Stage 2 — Extract
-    # ─────────────────────────────────────────────────────
-
-    def _parse_output(self, output_file: Path) -> list[str]:
-        """Parse Katana's JSONL output and return a flat list of raw URLs."""
-        if not output_file.exists():
-            self._log.warning("Katana output file not found: %s", output_file)
-            return []
-
-        urls: list[str] = []
-        raw_text = output_file.read_text(encoding="utf-8", errors="replace")
-        for line in raw_text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                url = (
-                    obj.get("endpoint")
-                    or obj.get("request", {}).get("endpoint")
-                    or obj.get("url")
-                    or ""
-                )
-                if url:
-                    urls.append(url.strip())
-            except (json.JSONDecodeError, AttributeError):
-                if line.startswith(("http://", "https://")):
-                    urls.append(line)
-        return urls
-
-    # ─────────────────────────────────────────────────────
-    #  Stage 3 — Normalize
+    #  Normalize
     # ─────────────────────────────────────────────────────
 
     @staticmethod
@@ -652,8 +400,8 @@ class KatanaCrawler:
     async def _supplement(self, cr: CrawlResult) -> tuple[list[str], set[str]]:
         """
         Fetch discovered HTML pages and JS files and extract further URL
-        references directly, so nothing depends on Katana emitting a
-        <script type=module> / modulepreload / lazy-import it didn't follow.
+        references directly, so nothing depends on the browser having requested
+        every <script type=module> / modulepreload / lazy-import.
 
         Works for any stack — the ".js" and href/src extraction is bundler-
         agnostic, and JS mining is iterative (HTML → entry bundle → chunks →
@@ -669,11 +417,11 @@ class KatanaCrawler:
                      targets every path returns the same app shell, so httpx
                      can't confirm a client-side route — but a route the site's
                      own code declares is real, so these are trusted like
-                     Katana-native routes instead of being dropped. This is what
+                     browser-native routes instead of being dropped. This is what
                      surfaces /about, /careers, /contact on a client-rendered SPA
                      whose homepage HTML is just an empty shell.
         """
-        sem   = asyncio.Semaphore(settings.KATANA_VERIFY_CONCURRENCY)
+        sem   = asyncio.Semaphore(settings.VERIFY_CONCURRENCY)
         found:    set[str] = set()
         declared: set[str] = set()
         mined:    set[str] = set()
@@ -681,7 +429,7 @@ class KatanaCrawler:
         # MAX_BYTES caps how much of each already-downloaded body we scan (it
         # does not limit the download). Modern SPA HTML loads its <script src>
         # bundles right before </body>, so an 800 KB cap silently dropped every
-        # JS reference on large pages (nykaaman's homepage is ~900 KB). Scan up
+        # JS reference on large pages (a heavy homepage can be ~900 KB). Scan up
         # to 5 MB so those trailing bundle tags — and endpoints in big vendor
         # bundles — are seen.
         MAX_PAGES, MAX_JS_TOTAL, MAX_BYTES, MAX_ROUNDS = 40, 80, 5_000_000, 4
@@ -767,10 +515,10 @@ class KatanaCrawler:
         confirmed to exist. Rebuilds all buckets so nothing references a
         discarded URL.
 
-        `trusted_urls` are high-confidence routes: those Katana reached through
-        its own crawl (real navigation / headless render / .js route-table
-        parsing) plus those explicitly linked as an <a href>/src in the site's
-        own HTML. Everything else was mined freeform out of a JS bundle and is
+        `trusted_urls` are high-confidence routes: those the browser actually
+        requested during the crawl (real navigation / XHR / fetch) plus those
+        explicitly linked as an <a href>/src in the site's own HTML. Everything
+        else was mined freeform out of a JS bundle and is
         treated as a guess: on catch-all / soft-404 targets (where httpx sees
         HTTP 200 for literally any path) those guesses are dropped unless their
         response is provably different from the app shell. This stops the crawl
@@ -867,14 +615,14 @@ class KatanaCrawler:
           * status must be in VERIFY_KEEP_STATUS (404/410/5xx/errors dropped);
           * a .js URL must return a real JavaScript body (not the HTML shell);
           * on catch-all / soft-404 targets, a page/endpoint that is NOT trusted
-            (neither Katana-native nor linked in the site's HTML) is kept only if
+            (neither browser-native nor linked in the site's HTML) is kept only if
             its response is provably different from the app shell — otherwise
             it's an unverifiable guess and is dropped.
 
         On normal targets (real 404s, `baseline is None`) status is trusted, so
         behaviour is unchanged from a plain existence check.
         """
-        sem = asyncio.Semaphore(settings.KATANA_VERIFY_CONCURRENCY)
+        sem = asyncio.Semaphore(settings.VERIFY_CONCURRENCY)
 
         async def check(u: str) -> str | None:
             async with sem:
@@ -890,7 +638,7 @@ class KatanaCrawler:
                 if baseline is None:
                     return u                      # server returns real 404s → status is trustworthy
                 if u in trusted_urls:
-                    return u                      # Katana-native or linked in HTML → real
+                    return u                      # browser-native or linked in HTML → real
                 return u if self._differs_from_shell(sig, baseline) else None
 
         results  = await asyncio.gather(*[check(u) for u in urls])
@@ -924,7 +672,7 @@ class KatanaCrawler:
         self._log.warning(
             "Target uses catch-all / soft-404 routing (random paths returned "
             "HTTP %d, shell %s). Regex-mined pages that can't be told apart "
-            "from the app shell will be dropped; Katana-discovered routes and "
+            "from the app shell will be dropped; browser-discovered routes and "
             "real JS/API responses are kept.",
             first.status, "stable" if stable else "varies per request",
         )

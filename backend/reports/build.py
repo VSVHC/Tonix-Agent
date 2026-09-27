@@ -4,8 +4,8 @@ backend/reports/build.py
 On-demand report builder. Generates a scan's PDF or HTML report from its
 stored findings into a throwaway temp directory, for streaming download.
 
-Nothing is persisted in REPORTS_DIR — the download endpoint streams the file
-and deletes the temp dir afterward (see /api/report in main.py).
+Nothing is persisted on disk — the download endpoint streams the file and
+deletes the temp dir afterward (see /api/report in main.py).
 
 Note: the live-scan status_map (which marks errored modules as
 'not_applicable') only exists during the scan, so on-demand reports show those
@@ -59,5 +59,7 @@ async def build_report(scan_id: str, fmt: str) -> tuple[str, str]:
         _GENERATORS[fmt],
         scan_id=scan_id, target_url=target_url, findings=deduped,
         counts=counts, filename=f"{base}.{fmt}", save_path=tmp_dir,
+        ai_summary=scan.get("ai_summary") or "",
+        ai_correlations=scan.get("ai_correlations") or [],
     )
     return tmp_dir, path

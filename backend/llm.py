@@ -102,6 +102,61 @@ async def enrich_findings_concurrent(findings: list[Finding]) -> list[dict[str, 
     return await asyncio.gather(*tasks)
 
 
+SCAN_SUMMARY_SYSTEM = """You are a senior penetration tester writing the summary of a security assessment.
+You are given the full list of confirmed findings from one automated blackbox scan.
+
+Produce two things:
+1. "summary" — a 3-5 sentence executive summary of the target's overall security posture:
+   the biggest risks, the general theme, and what to fix first. Written for a technical manager.
+2. "chains" — a list of attack chains: cases where two or more findings COMBINE into a bigger
+   risk than any one alone (e.g. exposed .git + verbose errors = source-code disclosure).
+   Each item is ONE sentence naming the findings involved and the combined risk. If no findings
+   meaningfully combine, return an empty list.
+
+Only reason about the findings given — do NOT invent vulnerabilities that are not listed.
+Respond ONLY with a JSON object — no preamble, no markdown, no backticks.
+Format:
+{
+  "summary": "...",
+  "chains": ["...", "..."]
+}"""
+
+
+async def summarize_scan(findings: list[Finding], target_url: str) -> dict[str, Any]:
+    """
+    One LLM pass over ALL findings → executive summary + correlated attack chains.
+    Returns {"summary": str, "correlations": list[str]}.
+    Falls back to empty values if Ollama is unavailable or no findings.
+    """
+    if not findings:
+        return {"summary": "", "correlations": []}
+
+    # Compact list — keep token budget bounded even on large scans.
+    lines = [
+        f"- [{f.severity}] {f.title} ({f.module}) — {(f.evidence or '')[:160]}"
+        for f in findings[:40]
+    ]
+    user_prompt = (
+        f"Target: {target_url}\n"
+        f"Confirmed findings ({len(findings)}):\n" + "\n".join(lines) +
+        "\n\nWrite the executive summary and attack chains."
+    )
+
+    async with _LLM_SEMAPHORE:
+        try:
+            result = await _call_ollama(user_prompt, system=SCAN_SUMMARY_SYSTEM, num_predict=700)
+            chains = result.get("chains") or []
+            if isinstance(chains, str):
+                chains = [chains]
+            return {
+                "summary": str(result.get("summary") or ""),
+                "correlations": [str(c) for c in chains if str(c).strip()],
+            }
+        except Exception as exc:
+            log.warning("LLM scan summary failed: %s", exc)
+            return {"summary": "", "correlations": []}
+
+
 async def check_ollama_health() -> bool:
     """Returns True if the local Ollama server is reachable."""
     try:
@@ -116,7 +171,8 @@ async def check_ollama_health() -> bool:
 #  Internal
 # ─────────────────────────────────────────────────────────
 
-async def _call_ollama(user_prompt: str) -> dict[str, Any]:
+async def _call_ollama(user_prompt: str, system: str = SYSTEM_PROMPT,
+                       num_predict: int = 400) -> dict[str, Any]:
     """
     Call the local Ollama /api/chat endpoint.
     Returns parsed JSON dict from the model response.
@@ -125,12 +181,12 @@ async def _call_ollama(user_prompt: str) -> dict[str, Any]:
         "model": settings.OLLAMA_MODEL,
         "stream": False,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user",   "content": user_prompt},
         ],
         "options": {
             "temperature": 0.1,
-            "num_predict": 400,
+            "num_predict": num_predict,
         },
     }
 

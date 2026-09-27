@@ -8,7 +8,7 @@ Rule:
   Vulnerable ONLY if the server returns HTTP 200 AND the response body
   actually contains proof of an echo (the unique probe header value, or
   the request line starting with "TRACE"). A bare 200 alone is not
-  trusted — SPA catch-all / soft-404 routing (see katana_crawler.py's
+  trusted — SPA catch-all / soft-404 routing (see crawl_pipeline.py's
   soft-404 detection) can return 200 with the normal app shell for
   almost any method or path, which previously would have been
   misread as XST-vulnerable with no supporting evidence at all.

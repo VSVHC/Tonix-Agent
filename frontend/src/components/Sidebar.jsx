@@ -38,15 +38,11 @@ function NavItem({ to, icon: Icon, label, collapsed, live, end }) {
   )
 }
 
-function HealthRow({ label, ok, okText, badText, collapsed }) {
+function HealthRow({ label, ok, collapsed }) {
   return (
     <div className={cn('flex items-center gap-2 text-xs', collapsed && 'justify-center')}>
       <Circle size={8} className={ok ? 'fill-emerald-500 text-emerald-500' : 'fill-amber-500 text-amber-500'} />
-      {!collapsed && (
-        <span className="text-muted-foreground">
-          {label} <span className={ok ? 'text-foreground' : 'text-amber-600 dark:text-amber-400'}>{ok ? okText : badText}</span>
-        </span>
-      )}
+      {!collapsed && <span className="text-foreground">{label}</span>}
     </div>
   )
 }
@@ -101,8 +97,8 @@ export default function Sidebar({ activeScanId, health, theme, onToggleTheme }) 
       {/* Footer: health + theme + collapse */}
       <div className="space-y-3 border-t border-border p-3">
         <div className={cn('space-y-1.5', !collapsed && 'px-2')}>
-          <HealthRow label="Ollama" ok={ollamaOk} okText="ready" badText="offline" collapsed={collapsed} />
-          <HealthRow label="Database" ok={dbOk} okText="connected" badText="error" collapsed={collapsed} />
+          <HealthRow label="Ollama" ok={ollamaOk} collapsed={collapsed} />
+          <HealthRow label="Database" ok={dbOk} collapsed={collapsed} />
         </div>
 
         <div className={cn('flex items-center gap-1', collapsed ? 'flex-col' : 'justify-between')}>

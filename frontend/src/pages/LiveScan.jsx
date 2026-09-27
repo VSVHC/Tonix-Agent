@@ -3,10 +3,10 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   Terminal, CheckCircle2, ChevronDown, ChevronRight, ExternalLink, Download,
   AlertOctagon, X, Search, Cpu, Globe, Pause, Play, Square, ArrowUpDown,
-  Loader2, Plus, ShieldCheck, MinusCircle,
+  Loader2, Plus, ShieldCheck, MinusCircle, Sparkles, Link2,
 } from 'lucide-react'
 import { Button, Card, Input, IconButton, SeverityBadge, SEV_ICON, ProgressBar, cn } from '../components/ui.jsx'
-import { API, WS, SEV_ORDER, SEVERITIES, KATANA_MODULES } from '../lib/api.js'
+import { API, WS, SEV_ORDER, SEVERITIES, PLAYWRIGHT_MODULES } from '../lib/api.js'
 import { moduleLabel } from '../lib/format.js'
 import { TESTCASE_TITLES, TESTCASE_INFO, TESTCASE_ORDER, isBenignFinding } from '../lib/testcases.js'
 
@@ -21,6 +21,7 @@ export default function LiveScan({ scanId: scanIdProp, onScanEnded }) {
   const [modules, setModules] = useState({})
   const [status, setStatus] = useState('connecting')
   const [summary, setSummary] = useState(null)
+  const [ai, setAi] = useState(null)   // { summary, correlations }
   const [critAlert, setCritAlert] = useState(null)
   const [isPaused, setIsPaused] = useState(false)
   const [expanded, setExpanded] = useState({})
@@ -32,6 +33,7 @@ export default function LiveScan({ scanId: scanIdProp, onScanEnded }) {
 
   const [crawlStatus, setCrawlStatus] = useState('idle')
   const [crawlResult, setCrawlResult] = useState(null)
+  const [crawlProgress, setCrawlProgress] = useState(null)
   const [crawlExpanded, setCrawlExpanded] = useState(false)
   const [urlFilter, setUrlFilter] = useState('all')
 
@@ -51,6 +53,9 @@ export default function LiveScan({ scanId: scanIdProp, onScanEnded }) {
       .then(d => {
         if (d.scan) setScan(d.scan)
         if (d.findings) setFindings(d.findings.map(normUrls))
+        if (d.scan?.ai_summary || d.scan?.ai_correlations?.length) {
+          setAi({ summary: d.scan.ai_summary || '', correlations: d.scan.ai_correlations || [] })
+        }
         if (d.scan?.status === 'completed') {
           setStatus('completed'); setOverallPct(100)
           setSummary({
@@ -84,19 +89,25 @@ export default function LiveScan({ scanId: scanIdProp, onScanEnded }) {
         addLog(`${data.total_modules} modules queued`, 'muted')
         break
       case 'crawl_started':
-        setCrawlStatus('running'); addLog(`Katana crawl started → ${data.target_url}`, 'module'); break
+        setCrawlStatus('running'); setCrawlProgress(null); addLog(`Playwright crawl started → ${data.target_url}`, 'module'); break
+      case 'crawl_progress':
+        // Flip to 'running' here too: if the WS connected a beat after the scan
+        // started, crawl_started was missed — the first progress event recovers.
+        setCrawlStatus(s => (s === 'done' || s === 'failed') ? s : 'running')
+        setCrawlProgress({ visited: data.pages_visited, total: data.pages_total, urls: data.urls_found })
+        break
       case 'crawl_completed':
         setCrawlStatus('done'); setCrawlResult(data); setCrawlExpanded(true)
         addLog(`Crawl complete — ${data.url_count} URLs in ${data.crawl_duration}s`, 'success')
         addLog(`API: ${data.api_count}  Forms: ${data.form_count}  JS: ${data.js_count}`, 'muted')
         break
       case 'crawl_failed':
-        setCrawlStatus('failed'); addLog(`Katana crawl failed: ${data.reason}`, 'error'); break
+        setCrawlStatus('failed'); addLog(`Playwright crawl failed: ${data.reason}`, 'error'); break
       case 'module_started':
         setModules(m => ({ ...m, [data.module]: {
           status: 'running', index: data.index, total: data.total,
           percent: 0, elapsed: null, findingCount: 0,
-          katana: data.katana_enabled ?? KATANA_MODULES.has(data.module),
+          playwright: data.playwright_enabled ?? PLAYWRIGHT_MODULES.has(data.module),
         }}))
         setOverallPct(data.percent_complete ?? 0)
         addLog(`${moduleLabel(data.module)} — starting (${data.index}/${data.total})`, 'module')
@@ -127,6 +138,9 @@ export default function LiveScan({ scanId: scanIdProp, onScanEnded }) {
         addLog(data.message, data.level); break
       case 'scan_completed':
         setStatus('completed'); setOverallPct(100); setSummary(data); setPendingAction(null); onScanEnded?.()
+        if (data.ai_summary || data.ai_correlations?.length) {
+          setAi({ summary: data.ai_summary || '', correlations: data.ai_correlations || [] })
+        }
         addLog('Scan complete.', 'success')
         addLog(`Total findings: ${data.counts?.total || 0}`, 'info'); break
       case 'scan_failed':
@@ -344,7 +358,7 @@ export default function LiveScan({ scanId: scanIdProp, onScanEnded }) {
       <div className="grid gap-5 xl:grid-cols-[380px_1fr]">
         {/* Left: crawl + modules + log */}
         <div className="space-y-5">
-          {/* Katana */}
+          {/* Playwright crawl */}
           <Card className="overflow-hidden">
             <button
               className="flex w-full items-center gap-3 px-4 py-3 text-left"
@@ -357,10 +371,12 @@ export default function LiveScan({ scanId: scanIdProp, onScanEnded }) {
                 {crawlStatus === 'failed' && <X size={15} className="text-red-500" />}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block text-xs font-semibold uppercase tracking-wide text-foreground">Katana crawl</span>
+                <span className="block text-xs font-semibold uppercase tracking-wide text-foreground">Playwright crawl</span>
                 <span className="block truncate text-xs text-muted-foreground">
                   {crawlStatus === 'idle' && 'Waiting to start…'}
-                  {crawlStatus === 'running' && 'Discovering URLs…'}
+                  {crawlStatus === 'running' && (crawlProgress
+                    ? `Crawling… ${crawlProgress.visited}/${crawlProgress.total} pages · ${crawlProgress.urls} URLs found`
+                    : 'Launching browser…')}
                   {crawlStatus === 'done' && `${(crawlResult?.url_count || 0) + (crawlResult?.js_count || 0)} URLs discovered`}
                   {crawlStatus === 'failed' && 'Crawl failed — check the log'}
                 </span>
@@ -443,6 +459,39 @@ export default function LiveScan({ scanId: scanIdProp, onScanEnded }) {
 
         {/* Right: severity + findings */}
         <div className="space-y-4">
+          {/* AI analysis — exec summary + correlated attack chains */}
+          {ai && (ai.summary || ai.correlations?.length > 0) && (
+            <Card className="overflow-hidden border-primary/40">
+              <div className="flex items-center gap-2 border-b border-border bg-primary-soft px-4 py-2.5">
+                <Sparkles size={14} className="text-primary" />
+                <span className="text-2xs font-semibold uppercase tracking-wider text-primary">AI Analysis</span>
+              </div>
+              <div className="space-y-4 p-4">
+                {ai.summary && (
+                  <div>
+                    <div className="mb-1 text-2xs font-semibold uppercase tracking-wide text-subtle-foreground">Executive Summary</div>
+                    <p className="text-sm leading-relaxed text-foreground">{ai.summary}</p>
+                  </div>
+                )}
+                {ai.correlations?.length > 0 && (
+                  <div>
+                    <div className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-subtle-foreground">Correlated Attack Chains ({ai.correlations.length})</div>
+                    <ul className="space-y-1.5">
+                      {ai.correlations.map((c, i) => (
+                        <li key={i} className="flex gap-2 text-sm leading-relaxed text-foreground">
+                          <Link2 size={14} className="mt-0.5 shrink-0 text-primary" /> <span>{c}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="text-2xs italic text-subtle-foreground">
+                  Generated locally by an LLM from the confirmed findings. Advisory only — severity and detection are set by the scanner.
+                </div>
+              </div>
+            </Card>
+          )}
+
           {/* Severity summary (clickable filters) */}
           <div className="grid grid-cols-5 gap-2">
             {SEVERITIES.map(s => {
@@ -480,7 +529,7 @@ export default function LiveScan({ scanId: scanIdProp, onScanEnded }) {
 
             {vulnFindings.length === 0 ? (
               <div className="p-10 text-center text-sm text-muted-foreground">
-                {isActive ? (crawlStatus === 'running' ? 'Katana is crawling — findings appear once modules start.' : 'Scanning… vulnerabilities will appear here.') : 'No vulnerabilities detected.'}
+                {isActive ? (crawlStatus === 'running' ? 'Playwright is crawling — findings appear once modules start.' : 'Scanning… vulnerabilities will appear here.') : 'No vulnerabilities detected.'}
               </div>
             ) : filteredFindings.length === 0 ? (
               <div className="p-10 text-center text-sm text-muted-foreground">No vulnerabilities match your filter.</div>
@@ -633,7 +682,7 @@ function SortTh({ label, field, sortField, sortDir, toggleSort, className }) {
 }
 
 function ModuleRow({ name, meta }) {
-  const isKatana = meta.katana ?? KATANA_MODULES.has(name)
+  const isPlaywright = meta.playwright ?? PLAYWRIGHT_MODULES.has(name)
   return (
     <div className="flex items-center gap-2 px-4 py-2">
       <span className="flex h-4 w-4 shrink-0 items-center justify-center">
@@ -643,7 +692,7 @@ function ModuleRow({ name, meta }) {
           : <span className="h-1.5 w-1.5 rounded-full bg-border-strong" />}
       </span>
       <span className="flex-1 truncate text-xs text-foreground">{moduleLabel(name)}</span>
-      {isKatana && <span className="rounded bg-muted px-1.5 py-0.5 text-2xs font-medium text-subtle-foreground">Katana</span>}
+      {isPlaywright && <span className="rounded bg-muted px-1.5 py-0.5 text-2xs font-medium text-subtle-foreground">Playwright</span>}
       <span className="w-14 text-right font-mono text-2xs text-muted-foreground tnum">
         {meta.status === 'running' && meta.percent != null ? `${meta.percent}%`
           : (meta.status === 'done' || meta.status === 'error') && meta.elapsed != null ? `${meta.elapsed}s` : ''}
@@ -654,7 +703,7 @@ function ModuleRow({ name, meta }) {
 }
 
 function FindingRows({ finding: f, expanded, activeTab, onToggle, onTab }) {
-  const isKatana = KATANA_MODULES.has(f.module)
+  const isPlaywright = PLAYWRIGHT_MODULES.has(f.module)
   const tabs = ['overview', 'evidence', 'request', 'remediation']
   return (
     <>
@@ -664,11 +713,11 @@ function FindingRows({ finding: f, expanded, activeTab, onToggle, onTab }) {
           <div className="font-medium text-foreground">{f.title}</div>
           <div className="mt-0.5 flex items-center gap-1.5 md:hidden">
             <span className="text-2xs text-muted-foreground">{moduleLabel(f.module)}</span>
-            {isKatana && <span className="rounded bg-muted px-1 text-2xs text-subtle-foreground">Katana</span>}
+            {isPlaywright && <span className="rounded bg-muted px-1 text-2xs text-subtle-foreground">Playwright</span>}
           </div>
         </td>
         <td className="hidden px-3 py-2.5 text-xs text-muted-foreground md:table-cell">
-          {moduleLabel(f.module)}{isKatana && <span className="ml-1.5 rounded bg-muted px-1 text-2xs text-subtle-foreground">Katana</span>}
+          {moduleLabel(f.module)}{isPlaywright && <span className="ml-1.5 rounded bg-muted px-1 text-2xs text-subtle-foreground">Playwright</span>}
         </td>
         <td className="px-3 py-2.5 text-right text-xs text-muted-foreground tnum">{f.affected_urls?.length || 0}</td>
         <td className="pr-3 text-subtle-foreground">{expanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}</td>

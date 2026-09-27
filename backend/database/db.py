@@ -41,9 +41,17 @@ CREATE TABLE IF NOT EXISTS scans (
     high_count      INTEGER DEFAULT 0,
     medium_count    INTEGER DEFAULT 0,
     low_count       INTEGER DEFAULT 0,
-    info_count      INTEGER DEFAULT 0
+    info_count      INTEGER DEFAULT 0,
+    ai_summary      TEXT,
+    ai_correlations TEXT
 );
 """
+
+# Columns added after v2.0 — applied to existing DBs via ALTER TABLE at startup.
+SCAN_MIGRATIONS = [
+    "ALTER TABLE scans ADD COLUMN ai_summary TEXT",
+    "ALTER TABLE scans ADD COLUMN ai_correlations TEXT",
+]
 
 CREATE_FINDINGS_TABLE = """
 CREATE TABLE IF NOT EXISTS findings (
@@ -95,6 +103,12 @@ async def init_db() -> None:
     await _db.execute(CREATE_FINDINGS_TABLE)
     for idx in CREATE_INDEXES:
         await _db.execute(idx)
+    # Migrate older DBs: add columns that CREATE ... IF NOT EXISTS won't backfill.
+    for stmt in SCAN_MIGRATIONS:
+        try:
+            await _db.execute(stmt)
+        except aiosqlite.OperationalError:
+            pass  # column already exists
     await _db.commit()
     log.info("Database ready")
 
@@ -167,6 +181,15 @@ async def complete_scan(scan_id: str, counts: dict) -> None:
     )
     await _conn().commit()
     log.debug("Scan completed: %s", scan_id)
+
+
+async def save_scan_analysis(scan_id: str, summary: str, correlations: list[str]) -> None:
+    """Store the LLM-generated executive summary + correlated attack chains."""
+    await _conn().execute(
+        "UPDATE scans SET ai_summary = ?, ai_correlations = ? WHERE id = ?",
+        (summary or "", json.dumps(correlations or []), scan_id),
+    )
+    await _conn().commit()
 
 
 async def update_scan_counts(scan_id: str, counts: dict) -> None:
@@ -256,10 +279,17 @@ async def get_all_scans() -> list[dict]:
 
 
 async def get_scan_by_id(scan_id: str) -> Optional[dict]:
-    """Return a single scan by ID."""
+    """Return a single scan by ID (ai_correlations decoded to a list)."""
     async with _conn().execute("SELECT * FROM scans WHERE id = ?", (scan_id,)) as cursor:
         row = await cursor.fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    scan = dict(row)
+    try:
+        scan["ai_correlations"] = json.loads(scan.get("ai_correlations") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        scan["ai_correlations"] = []
+    return scan
 
 
 # ─────────────────────────────────────────────────────────

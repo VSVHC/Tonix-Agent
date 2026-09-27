@@ -2,7 +2,7 @@
 trace_forgot.py — where is /forgot defined on a JS-heavy target?
 
 Run locally (from a network that can reach the target):
-    python scripts/trace_forgot.py https://ntaa.com.au /forgot
+    python scripts/trace_forgot.py https://example.com /forgot
 
 It fetches the homepage, finds every .js bundle it references, follows one
 level of chunk imports, and reports which file (if any) contains the route
@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
-target = sys.argv[1] if len(sys.argv) > 1 else "https://ntaa.com.au"
+target = sys.argv[1] if len(sys.argv) > 1 else "https://example.com"
 needle = sys.argv[2] if len(sys.argv) > 2 else "/forgot"
 
 JS_REF = re.compile(r"""["'`]([^"'`\s<>]+?\.(?:js|mjs))(?:\?[^"'`]*)?["'`]""", re.I)

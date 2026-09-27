@@ -30,9 +30,6 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.1:8b"
 
-    # ── Reports ────────────────────────────────────────────
-    REPORTS_DIR: Path = BASE_DIR / "reports"
-
     # ── Server ─────────────────────────────────────────────
     BACKEND_PORT: int = 8000
     FRONTEND_PORT: int = 3000
@@ -67,23 +64,21 @@ class Settings(BaseSettings):
     # ── Internal constants ─────────────────────────────────
     SEVERITY_LEVELS: list[str] = ["critical", "high", "medium", "low", "info"]
 
-    # ── Katana crawler ─────────────────────────────────────
-    KATANA_PATH: str = "katana"          # path to katana binary (must be in PATH)
-    KATANA_DEPTH: int = 5                # crawl depth (-d) — deep enough to exhaust routes
-    KATANA_TIMEOUT: int = 0              # wall-clock cap in secs; 0 = no limit, run until katana finishes
-    KATANA_CONCURRENCY: int = 10         # katana internal concurrency (-c flag)
+    # ── Crawl pipeline ─────────────────────────────────────
+    # After the Playwright browser crawl, discovered URLs are verified with
+    # httpx (crawl_pipeline.py). This caps how many are verified concurrently.
+    VERIFY_CONCURRENCY: int = 15
 
-    # JS-aware crawling. Modern targets are SPAs (React/Vue/Angular): the
-    # initial HTML is an almost-empty shell and every real route/endpoint is
-    # rendered or referenced from JavaScript. Plain HTML crawling finds 2-3
-    # URLs and misses everything. These flags make Katana actually see them.
-    KATANA_JS_CRAWL: bool = True         # -jc : parse .js files for endpoints & more JS
-    KATANA_HEADLESS: bool = True         # -headless : render SPA routes in real Chrome
-    KATANA_KNOWN_FILES: str = "all"      # -kf : also crawl robots.txt + sitemap.xml
-    KATANA_RATE_LIMIT: int = 0           # -rl : requests/sec cap (0 = katana default)
-
-    # Post-crawl httpx verification: how many URLs to verify concurrently.
-    KATANA_VERIFY_CONCURRENCY: int = 15
+    # ── Playwright crawler ─────────────────────────────────
+    # Tonix crawls with a real browser (Playwright): it opens each in-scope page,
+    # waits for network idle, scrolls to trigger lazy chunks and records EVERY
+    # request the app actually fires — catching runtime-built API calls and
+    # lazy-loaded JS that a static crawl misses. If Chromium can't launch, the
+    # crawl raises a clear error and stops (there is no fallback crawler).
+    PLAYWRIGHT_HEADLESS: bool  = True     # run Chromium headless
+    PLAYWRIGHT_MAX_PAGES: int  = 60       # max in-scope pages to visit (BFS bound)
+    PLAYWRIGHT_PAGE_TIMEOUT: int = 20     # per-page navigation timeout (secs)
+    PLAYWRIGHT_SCROLL_PASSES: int = 4     # scroll steps per page to trigger lazy loads
 
     # Scope: keep the exact target host + www. + api.<domain> subdomain.
     # Other subdomains (blog., cdn.) and third-party hosts are always dropped.
@@ -91,11 +86,11 @@ class Settings(BaseSettings):
     SCOPE_ALLOW_API_SUBDOMAIN: bool = True
 
     # Scope: also keep ANY subdomain that shares the target's registered domain
-    # (e.g. asset.nykaaman.com, static.nykaaman.com when the target is
-    # www.nykaaman.com). Modern apps host their JS bundles / assets on a
+    # (e.g. asset.example.com, static.example.com when the target is
+    # www.example.com). Modern apps host their JS bundles / assets on a
     # separate same-org subdomain, so without this the crawler can't read them
     # and discovers nothing. Third-party CDNs on a DIFFERENT registered domain
-    # (cdn.nykaa.com, images-static.naikaa.com) remain out of scope. Turn off
+    # (cdn.otherhost.com, images-static.othercdn.com) remain out of scope. Turn off
     # to restrict to the exact host (+ www / api) only.
     SCOPE_ALLOW_SUBDOMAINS: bool = True
 
@@ -103,7 +98,6 @@ class Settings(BaseSettings):
 
     @field_validator("BACKEND_PORT", "FRONTEND_PORT", "ERROR_MODULE_RATE_LIMIT",
                      "SCAN_RATE_LIMIT_PER_MINUTE", "REQUEST_TIMEOUT",
-                     "KATANA_DEPTH", "KATANA_CONCURRENCY",
                      mode="before")
     @classmethod
     def must_be_positive(cls, v: object) -> object:
@@ -115,33 +109,12 @@ class Settings(BaseSettings):
             raise ValueError(f"Must be a positive integer, got: {val}")
         return val
 
-    @field_validator("KATANA_TIMEOUT", mode="before")
-    @classmethod
-    def must_be_non_negative(cls, v: object) -> object:
-        # 0 = no wall-clock cap (run until katana finishes); >0 caps the crawl.
-        try:
-            val = int(v)
-        except (TypeError, ValueError):
-            raise ValueError(f"Must be an integer, got: {v!r}")
-        if val < 0:
-            raise ValueError(f"Must be 0 or a positive integer, got: {val}")
-        return val
-
     @field_validator("OLLAMA_BASE_URL", mode="before")
     @classmethod
     def validate_ollama_url(cls, v: str) -> str:
         v = str(v).strip().rstrip("/")
         if not v.startswith(("http://", "https://")):
             raise ValueError(f"OLLAMA_BASE_URL must start with http:// or https://, got: {v!r}")
-        return v
-
-    @field_validator("KATANA_KNOWN_FILES", mode="before")
-    @classmethod
-    def validate_known_files(cls, v: str) -> str:
-        valid = {"all", "robotstxt", "sitemapxml", ""}
-        v = str(v).strip().lower()
-        if v not in valid:
-            raise ValueError(f"KATANA_KNOWN_FILES must be one of {valid}, got: {v!r}")
         return v
 
     @field_validator("LOG_LEVEL", mode="before")
@@ -155,7 +128,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def ensure_dirs(self) -> "Settings":
-        self.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         self.DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.LOG_DIR.mkdir(parents=True, exist_ok=True)
         return self

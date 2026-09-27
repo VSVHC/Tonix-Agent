@@ -31,7 +31,6 @@ from reportlab.platypus import (
     HRFlowable, ListFlowable, ListItem, Preformatted,
 )
 
-from backend.config import settings
 from backend.reports.catalog import TEST_CASES, MANUAL_TEST_CASES, cvss_band
 
 # ── Palette (matches the app's professional-blue theme) ──
@@ -77,12 +76,14 @@ def generate_pdf_report(
     started_at: str | None = None,
     completed_at: str | None = None,
     filename: str | None = None,
+    ai_summary: str = "",
+    ai_correlations: list[str] | None = None,
 ) -> str:
     """Render the PDF and return its absolute path."""
     host      = _clean_host(target_url)
     stamp     = datetime.now(timezone.utc)
     filename  = filename or f"{host}_{stamp.strftime('%Y-%m-%d_%H-%M')}.pdf"
-    base_dir  = Path(save_path).expanduser().resolve() if save_path else settings.REPORTS_DIR
+    base_dir  = Path(save_path).expanduser().resolve()
     base_dir.mkdir(parents=True, exist_ok=True)
     report_path = base_dir / filename
 
@@ -99,6 +100,7 @@ def generate_pdf_report(
     story: list = []
 
     _cover(story, styles, target_url, stamp)
+    _ai_section(story, styles, ai_summary, ai_correlations or [])
     _toc(story, styles, results)
     for r in results:
         _section(story, styles, r, target_url)
@@ -205,6 +207,33 @@ def _cover(story, S, target_url, stamp):
         "CONFIDENTIAL — This report is intended solely for authorized recipients. "
         "Unauthorized disclosure, copying, or distribution is strictly prohibited.",
         S["Confidential"]))
+    story.append(PageBreak())
+
+
+# ─────────────────────────────────────────────────────────
+#  AI analysis (executive summary + correlated attack chains)
+# ─────────────────────────────────────────────────────────
+
+def _ai_section(story, S, summary: str, correlations: list[str]):
+    if not summary and not correlations:
+        return
+    story.append(Paragraph("AI Analysis", S["H1"]))
+    story.append(HRFlowable(width="100%", thickness=0.6, color=LINE))
+    story.append(Spacer(1, 4 * mm))
+    if summary:
+        story.append(Paragraph("EXECUTIVE SUMMARY", S["Eyebrow"]))
+        story.append(Paragraph(esc(summary), S["Body"]))
+        story.append(Spacer(1, 4 * mm))
+    if correlations:
+        story.append(Paragraph("CORRELATED ATTACK CHAINS", S["Eyebrow"]))
+        story.append(ListFlowable(
+            [ListItem(Paragraph(esc(c), S["Body"]), leftIndent=6) for c in correlations],
+            bulletType="bullet", start="•",
+        ))
+        story.append(Spacer(1, 3 * mm))
+    story.append(Paragraph(
+        "Generated locally by an LLM from the confirmed findings. Advisory only — "
+        "severity and detection are set by the scanner.", S["Note"]))
     story.append(PageBreak())
 
 

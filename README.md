@@ -87,7 +87,7 @@ Tonix Agent runs a real-browser crawl of a target application (via **Playwright*
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/<your-org>/tonix-agent.git
+git clone https://github.com/VSVHC/Tonix-Agent.git
 cd tonix-agent
 ```
 
